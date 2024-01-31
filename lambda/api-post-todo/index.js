@@ -2,21 +2,17 @@ const dbhelper = require("/opt/nodejs/data-helper");
 
 const handler = async (event) => {
   console.log(JSON.stringify(event, null, 2));
-  const email = event["pathParameters"]["email"];
+  const { email, todo } = JSON.parse(event.body);
 
   let response = {
-    statusCode: 200,
+    statusCode: 201,
   };
-
   try {
-    let items = await dbhelper.getTodoByUserid(email);
-
-    response.body = JSON.stringify(items);
+    const r = await dbhelper.addTodo(email, todo, new Date().getTime(), 30);
   } catch (error) {
     console.log(error);
     response.statusCode = 500;
   }
-
   return response;
 };
 module.exports = { handler };

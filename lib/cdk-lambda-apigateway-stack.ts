@@ -26,24 +26,77 @@ export class CdkLambdaApigatewayStack extends cdk.Stack {
 
     // The code that defines your stack goes here
 
-    // example resource
-    // const queue = new sqs.Queue(this, 'CdkLambdaApigatewayQueue', {
-    //   visibilityTimeout: cdk.Duration.seconds(300)
-    // });
+    const encryptionKey = new kms.Key(this, "todo-basic-key", {
+      enableKeyRotation: true,
+      alias: "todo-basic-key",
+    });
+    //create dynamodb table
+    const mainTable = new dynamodb.Table(this, "todo-single-table", {
+      partitionKey: {
+        name: "PK",
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: "SK",
+        type: dynamodb.AttributeType.STRING,
+      },
+      timeToLiveAttribute: "TTL",
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: encryptionKey,
+    });
+    mainTable.addGlobalSecondaryIndex({
+      indexName: "GSI1",
+      partitionKey: {
+        name: "GSI1PK",
+        type: dynamodb.AttributeType.STRING,
+      },
+      sortKey: {
+        name: "GSI1SK",
+        type: dynamodb.AttributeType.STRING,
+      },
+    });
+
+    const dbHelperLayer = new lambda.LayerVersion(this, "db-helper-layer", {
+      compatibleRuntimes: [lambda.Runtime.NODEJS_18_X],
+      code: lambda.Code.fromAsset("lambda/db-helper-layer"),
+      description: "Dynamo related commmon code and access patterns",
+    });
     const getTodoLambda = new lambdanodejs.NodejsFunction(this, "getTodoLambda", {
       runtime: lambda.Runtime.NODEJS_18_X,
       timeout: cdk.Duration.seconds(5),
       entry: "lambda/api-get-todo/index.js",
       handler: "handler",
       environment: {
+        TABLE_MAIN: mainTable.tableName,
         AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
       },
       bundling: {
         nodeModules: [],
-        externalModules: [],
+        externalModules: ["/opt/nodejs/data-helper"],
       },
-      layers: [],
+      layers: [dbHelperLayer],
     });
+    mainTable.grantReadData(getTodoLambda);
+
+    const postTodoLambda = new lambdanodejs.NodejsFunction(this, "postTodoLambda", {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      timeout: cdk.Duration.seconds(5),
+      entry: "lambda/api-post-todo/index.js",
+      handler: "handler",
+      environment: {
+        TABLE_MAIN: mainTable.tableName,
+        AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1",
+      },
+      bundling: {
+        nodeModules: [],
+        externalModules: ["/opt/nodejs/data-helper"],
+      },
+      layers: [dbHelperLayer],
+    });
+    mainTable.grantWriteData(postTodoLambda);
+
     const httpApi = new apigwv2.HttpApi(this, "todo-http-api", {
       description: "HTTP API For TODO application",
       corsPreflight: {
@@ -60,12 +113,16 @@ export class CdkLambdaApigatewayStack extends cdk.Stack {
         allowOrigins: ["*"],
       },
     });
-    const toDoIntegration = new HttpLambdaIntegration('getTodoLambdaIntegration', getTodoLambda);
+    httpApi.addRoutes({
+      path: "/todo/{email}",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new HttpLambdaIntegration("getTodoLambdaIntegration", getTodoLambda),
+    });
 
     httpApi.addRoutes({
       path: "/todo",
-      methods: [apigwv2.HttpMethod.GET],
-      integration: toDoIntegration
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new HttpLambdaIntegration("postTodoLambdaIntegration", postTodoLambda),
     });
 
     new cdk.CfnOutput(this, `httpapidomain`, {
